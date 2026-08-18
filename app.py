@@ -35,29 +35,67 @@ app = Flask(__name__)
 api_key = os.getenv("GEMINI_API_KEY")
 
 if not api_key:
-    raise ValueError("GEMINI_API_KEY not found in .env file")
+    raise ValueError("GEMINI_API_KEY not found")
 
 client = genai.Client(api_key=api_key)
+
+# You can change this from Render Environment Variables
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 
 # ==========================================
 # FIREBASE / FIRESTORE
 # ==========================================
 
-firebase_key = os.path.join(
-    BASE_DIR,
-    "backend",
-    "firebase-service-account.json"
-)
+db = None
 
-if not firebase_admin._apps:
+firebase_json = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
 
-    cred = credentials.Certificate(firebase_key)
+try:
 
-    firebase_admin.initialize_app(cred)
+    if not firebase_admin._apps:
 
+        # ------------------------------------------
+        # OPTION 1: Render Environment Variable
+        # ------------------------------------------
 
-db = firestore.client()
+        if firebase_json:
+
+            firebase_info = json.loads(firebase_json)
+
+            cred = credentials.Certificate(firebase_info)
+
+            firebase_admin.initialize_app(cred)
+
+        # ------------------------------------------
+        # OPTION 2: Local JSON file
+        # ------------------------------------------
+
+        else:
+
+            firebase_key = os.path.join(
+                BASE_DIR,
+                "backend",
+                "firebase-service-account.json"
+            )
+
+            if os.path.exists(firebase_key):
+
+                cred = credentials.Certificate(firebase_key)
+
+                firebase_admin.initialize_app(cred)
+
+            else:
+
+                print("WARNING: Firebase credentials not found.")
+
+    db = firestore.client()
+
+except Exception as e:
+
+    print("Firebase initialization warning:", e)
+
+    db = None
 
 
 # ==========================================
@@ -100,8 +138,13 @@ def analyze():
 
     data = request.get_json()
 
-    text = data.get("text", "").strip()
+    if not data:
 
+        return jsonify({
+            "error": "Invalid request."
+        }), 400
+
+    text = data.get("text", "").strip()
 
     if not text:
 
@@ -168,7 +211,7 @@ Content to analyze:
 
         response = client.models.generate_content(
 
-            model="gemini-3.6-flash",
+            model=GEMINI_MODEL,
 
             contents=prompt
         )
@@ -177,7 +220,9 @@ Content to analyze:
         result_text = response.text.strip()
 
 
-        # Remove markdown code blocks if Gemini adds them
+        # ==========================================
+        # REMOVE MARKDOWN CODE BLOCK
+        # ==========================================
 
         if result_text.startswith("```"):
 
@@ -194,7 +239,9 @@ Content to analyze:
             result_text = result_text.strip()
 
 
-        # Convert AI response to JSON
+        # ==========================================
+        # CONVERT AI RESPONSE TO JSON
+        # ==========================================
 
         result = json.loads(result_text)
 
@@ -203,42 +250,55 @@ Content to analyze:
         # SAVE RESULT TO FIRESTORE
         # ==========================================
 
-        db.collection("analyses").add({
+        if db is not None:
 
-            "content": text,
+            try:
 
-            "classification": result.get(
-                "classification"
-            ),
+                db.collection("analyses").add({
 
-            "score": result.get(
-                "score"
-            ),
+                    "content": text,
 
-            "explanation": result.get(
-                "explanation"
-            ),
+                    "classification": result.get(
+                        "classification"
+                    ),
 
-            "warning_signs": result.get(
-                "warning_signs",
-                []
-            ),
+                    "score": result.get(
+                        "score"
+                    ),
 
-            "recommendation": result.get(
-                "recommendation"
-            )
+                    "explanation": result.get(
+                        "explanation"
+                    ),
 
-        })
+                    "warning_signs": result.get(
+                        "warning_signs",
+                        []
+                    ),
+
+                    "recommendation": result.get(
+                        "recommendation"
+                    )
+
+                })
+
+            except Exception as firebase_error:
+
+                print(
+                    "Firestore save error:",
+                    firebase_error
+                )
 
 
-        # Send result to website
+        # ==========================================
+        # SEND RESULT TO WEBSITE
+        # ==========================================
 
         return jsonify(result)
 
 
     except Exception as e:
 
-        print("ERROR:", e)
+        print("AI ANALYSIS ERROR:", e)
 
         return jsonify({
 
@@ -252,8 +312,16 @@ Content to analyze:
 # ==========================================
 
 if __name__ == "__main__":
-    import os
+
     app.run(
+
         host="0.0.0.0",
-        port=int(os.environ.get("PORT", 5000))
+
+        port=int(
+            os.environ.get(
+                "PORT",
+                5000
+            )
+        )
+
     )
